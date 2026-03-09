@@ -369,6 +369,10 @@ where
 		| _ => {},
 	}
 
+	self.services
+		.search
+		.index_pdu_mentions(shortroomid, &pdu_id, pdu);
+
 	// CONCERN: If we receive events with a relation out-of-order, we never write
 	// their relation / thread. We need some kind of way to trigger when we receive
 	// this event, and potentially a way to rebuild the table entirely.

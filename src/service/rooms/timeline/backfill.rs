@@ -347,6 +347,11 @@ pub async fn backfill_pdu(&self, origin: &ServerName, pdu: Box<RawJsonValue>) ->
 			self.services.search.index_pdu(shortroomid, &pdu_id, &body);
 		}
 	}
+
+	self.services
+		.search
+		.index_pdu_mentions(shortroomid, &pdu_id, &pdu);
+
 	drop(mutex_lock);
 
 	debug!("Prepended backfill pdu");

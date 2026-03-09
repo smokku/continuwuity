@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use axum::extract::State;
 use conduwuit::{
@@ -7,10 +7,13 @@ use conduwuit::{
 	result::FlatOk,
 	utils::{IterStream, stream::ReadyExt},
 };
-use conduwuit_service::{Services, rooms::search::RoomQuery};
+use conduwuit_service::{
+	Services,
+	rooms::search::{MentionQuery, RoomQuery},
+};
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, future::OptionFuture};
 use ruma::{
-	OwnedRoomId, RoomId, UInt, UserId,
+	CanonicalJsonValue, OwnedRoomId, RoomId, UInt, UserId,
 	api::client::search::search_events::{
 		self,
 		v3::{Criteria, EventContextResult, ResultCategories, ResultRoomEvents, SearchResult},
@@ -41,11 +44,14 @@ pub(crate) async fn search_events_route(
 ) -> Result<Response> {
 	let sender_user = body.sender_user();
 	let next_batch = body.next_batch.as_deref();
+	let mentions = parse_mentions_filter(body.json_body.as_ref())?;
 	let room_events_result: OptionFuture<_> = body
 		.search_categories
 		.room_events
 		.as_ref()
-		.map(|criteria| category_room_events(&services, sender_user, next_batch, criteria))
+		.map(|criteria| {
+			category_room_events(&services, sender_user, next_batch, criteria, &mentions)
+		})
 		.into();
 
 	Ok(Response {
@@ -63,6 +69,7 @@ async fn category_room_events(
 	sender_user: &UserId,
 	next_batch: Option<&str>,
 	criteria: &Criteria,
+	mentions: &MentionQuery,
 ) -> Result<ResultRoomEvents> {
 	let filter = &criteria.filter;
 
@@ -106,6 +113,7 @@ async fn category_room_events(
 				room_id: &room_id,
 				user_id: Some(sender_user),
 				criteria,
+				mentions,
 				skip: next_batch,
 				limit,
 			};
@@ -194,6 +202,81 @@ async fn category_room_events(
 		highlights,
 		groups: BTreeMap::new(), // TODO
 	})
+}
+
+fn parse_mentions_filter(json_body: Option<&CanonicalJsonValue>) -> Result<MentionQuery> {
+	let room_events_filter = json_body
+		.and_then(CanonicalJsonValue::as_object)
+		.and_then(|json| json.get("search_categories"))
+		.and_then(CanonicalJsonValue::as_object)
+		.and_then(|json| json.get("room_events"))
+		.and_then(CanonicalJsonValue::as_object)
+		.and_then(|json| json.get("filter"));
+
+	let Some(room_events_filter) = room_events_filter else {
+		return Ok(MentionQuery::default());
+	};
+
+	let Some(room_events_filter) = room_events_filter.as_object() else {
+		return Err!(Request(BadJson(
+			"`search_categories.room_events.filter` must be an object."
+		)));
+	};
+
+	let Some(mentions) = room_events_filter.get("mentions") else {
+		return Ok(MentionQuery::default());
+	};
+
+	let Some(mentions) = mentions.as_object() else {
+		return Err!(Request(BadJson(
+			"`search_categories.room_events.filter.mentions` must be an object."
+		)));
+	};
+
+	let room = match mentions.get("room") {
+		| Some(room) => {
+			let Some(room) = room.as_bool() else {
+				return Err!(Request(BadJson(
+					"`search_categories.room_events.filter.mentions.room` must be a boolean."
+				)));
+			};
+			Some(room)
+		},
+		| None => None,
+	};
+
+	let user_ids = match mentions.get("user_ids") {
+		| Some(user_ids) => {
+			let Some(user_ids) = user_ids.as_array() else {
+				return Err!(Request(BadJson(
+					"`search_categories.room_events.filter.mentions.user_ids` must be an array."
+				)));
+			};
+
+			let mut dedup = BTreeSet::new();
+			for user_id in user_ids {
+				let Some(user_id) = user_id.as_str() else {
+					return Err!(Request(BadJson(
+						"`search_categories.room_events.filter.mentions.user_ids` must contain \
+						 strings."
+					)));
+				};
+
+				let Ok(user_id) = UserId::parse(user_id) else {
+					return Err!(Request(InvalidParam(
+						"`mentions.user_ids` must contain full Matrix user IDs."
+					)));
+				};
+
+				dedup.insert(user_id.to_owned());
+			}
+
+			dedup.into_iter().collect()
+		},
+		| None => Vec::new(),
+	};
+
+	Ok(MentionQuery { user_ids, room })
 }
 
 async fn procure_room_state(services: &Services, room_id: &RoomId) -> Result<RoomState> {

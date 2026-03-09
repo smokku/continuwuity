@@ -39,6 +39,10 @@ pub async fn redact_pdu<Pdu: Event + Send + Sync>(
 		}
 	}
 
+	self.services
+		.search
+		.deindex_pdu_mentions(shortroomid, &pdu_id, &pdu);
+
 	let room_version_id = self
 		.services
 		.state

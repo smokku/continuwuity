@@ -23,7 +23,13 @@ use ruma::{
 	serde::Raw,
 };
 
-use crate::{Services, media, rooms::short::ShortStateHash};
+use crate::{
+	Services, media,
+	rooms::{
+		short::ShortStateHash,
+		timeline::{PduId, RawPduId},
+	},
+};
 
 /// The current schema version.
 /// - If database is opened at greater version we reject with error. The
@@ -66,6 +72,7 @@ async fn fresh(services: &Services) -> Result<()> {
 	db["global"].insert(b"retroactively_fix_bad_data_from_roomuserid_joined", []);
 	db["global"].insert(b"fix_referencedevents_missing_sep", []);
 	db["global"].insert(b"fix_readreceiptid_readreceipt_duplicates", []);
+	db["global"].insert(POPULATED_MENTION_SEARCH_INDEX_MARKER, []);
 
 	// Create the admin room and server user on first run
 	crate::admin::create_admin_room(services).boxed().await?;
@@ -169,6 +176,14 @@ async fn migrate(services: &Services) -> Result<()> {
 		.is_not_found()
 	{
 		fix_local_invite_state(services).await?;
+	}
+
+	if db["global"]
+		.get(POPULATED_MENTION_SEARCH_INDEX_MARKER)
+		.await
+		.is_not_found()
+	{
+		populate_mention_search_index(services).await?;
 	}
 
 	assert_eq!(
@@ -770,6 +785,55 @@ async fn fix_local_invite_state(services: &Services) -> Result {
 	info!(?fixed, "Fixed local invite state cache entries.");
 
 	db["global"].insert(FIXED_LOCAL_INVITE_STATE_MARKER, []);
+	db.db.sort()?;
+	Ok(())
+}
+
+const POPULATED_MENTION_SEARCH_INDEX_MARKER: &str = "populate_mention_search_index";
+async fn populate_mention_search_index(services: &Services) -> Result {
+	warn!("Populating mention search indexes.");
+
+	let db = &services.db;
+	let cork = db.cork_and_sync();
+	let room_ids = services
+		.rooms
+		.metadata
+		.iter_ids()
+		.map(ToOwned::to_owned)
+		.collect::<Vec<_>>()
+		.await;
+
+	let (mut rooms, mut events, mut mentions): (usize, usize, usize) = (0, 0, 0);
+	for room_id in room_ids {
+		let Ok(shortroomid) = services.rooms.short.get_shortroomid(&room_id).await else {
+			warn!(%room_id, "Skipping room in mention index migration: no shortroomid");
+			continue;
+		};
+
+		rooms = rooms.saturating_add(1);
+		let timeline_pdus = services
+			.rooms
+			.timeline
+			.all_pdus(&room_id)
+			.collect::<Vec<_>>()
+			.await;
+
+		for (shorteventid, pdu) in timeline_pdus {
+			let pdu_id: RawPduId = PduId { shortroomid, shorteventid }.into();
+
+			let indexed = services
+				.rooms
+				.search
+				.index_pdu_mentions(shortroomid, &pdu_id, &pdu);
+			events = events.saturating_add(1);
+			mentions = mentions.saturating_add(indexed);
+		}
+	}
+
+	drop(cork);
+	info!(?rooms, ?events, ?mentions, "Populated mention search indexes.");
+
+	db["global"].insert(POPULATED_MENTION_SEARCH_INDEX_MARKER, []);
 	db.db.sort()?;
 	Ok(())
 }
