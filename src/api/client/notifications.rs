@@ -1,9 +1,11 @@
+use std::{cmp::Reverse, collections::BinaryHeap, time::Instant};
+
 use axum::extract::State;
 use conduwuit::{Err, Event, Result, matrix::pdu::PduCount, warn};
 use futures::StreamExt;
 use ruma::{
 	MilliSecondsSinceUnixEpoch, UInt,
-	api::client::push::{get_notifications, get_notifications::v3 as r},
+	api::client::push::get_notifications,
 	events::{
 		AnySyncTimelineEvent, GlobalAccountDataEventType, StateEventType,
 		push_rules::PushRulesEvent, room::power_levels::RoomPowerLevelsEventContent,
@@ -14,6 +16,24 @@ use ruma::{
 
 use crate::Ruma;
 
+/// Wrapper to order notifications by timestamp
+#[derive(Debug)]
+struct NotificationItem(get_notifications::v3::Notification);
+
+impl PartialEq for NotificationItem {
+	fn eq(&self, other: &Self) -> bool { self.0.ts == other.0.ts }
+}
+
+impl Eq for NotificationItem {}
+
+impl PartialOrd for NotificationItem {
+	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+}
+
+impl Ord for NotificationItem {
+	fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.ts.cmp(&other.0.ts) }
+}
+
 /// # `GET /_matrix/client/v3/notifications`
 ///
 /// Get notifications for the user.
@@ -23,28 +43,6 @@ pub(crate) async fn get_notifications_route(
 	State(services): State<crate::State>,
 	body: Ruma<get_notifications::v3::Request>,
 ) -> Result<get_notifications::v3::Response> {
-	use std::{cmp::Reverse, collections::BinaryHeap, time::Instant};
-
-	// Wrapper to order notifications by timestamp
-	#[derive(Debug)]
-	struct NotificationItem(r::Notification);
-
-	impl PartialEq for NotificationItem {
-		fn eq(&self, other: &Self) -> bool { self.0.ts == other.0.ts }
-	}
-
-	impl Eq for NotificationItem {}
-
-	impl PartialOrd for NotificationItem {
-		fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-			Some(self.cmp(other))
-		}
-	}
-
-	impl Ord for NotificationItem {
-		fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.ts.cmp(&other.0.ts) }
-	}
-
 	let started = Instant::now();
 
 	let max_limit = services.server.config.notification_max_limit_per_request;
@@ -101,14 +99,18 @@ pub(crate) async fn get_notifications_route(
 			continue;
 		}
 
-		// Skip rooms the user is no longer joined to (stale notification
-		// counts can persist after leaving a room)
+		// Clean up stale notification counts for rooms the user has left,
+		// so this work is not repeated on subsequent calls
 		if !services
 			.rooms
 			.state_cache
 			.is_joined(sender_user, &room_id)
 			.await
 		{
+			services
+				.rooms
+				.user
+				.reset_notification_counts(sender_user, &room_id);
 			continue;
 		}
 
@@ -175,20 +177,10 @@ pub(crate) async fn get_notifications_route(
 				.get_actions(sender_user, &ruleset, &power_levels, &pdu_raw, &room_id)
 				.await;
 
-			let mut notify = false;
-
-			for action in actions {
-				if matches!(action, &Action::Notify) {
-					notify = true;
-				}
-			}
-
-			if notify {
-				let event: Raw<AnySyncTimelineEvent> = pdu_raw;
-
-				let notification_item = NotificationItem(r::Notification {
+			if actions.iter().any(|a| matches!(a, Action::Notify)) {
+				let notification_item = NotificationItem(get_notifications::v3::Notification {
 					actions: actions.to_vec(),
-					event,
+					event: pdu_raw,
 					profile_tag: None,
 					read: false,
 					room_id: room_id.clone(),
@@ -207,10 +199,6 @@ pub(crate) async fn get_notifications_route(
 		rooms_scanned = rooms_scanned.saturating_add(1);
 	}
 
-	// Capture heap stats before consuming
-	let heap_count = notifications.len();
-	let heap_bytes = size_of_val(notifications.as_slice());
-
 	// Convert heap to vector and sort by timestamp descending (newest first)
 	let mut notifications: Vec<_> = notifications
 		.into_iter()
@@ -226,14 +214,12 @@ pub(crate) async fn get_notifications_route(
 
 	let elapsed = started.elapsed();
 	conduwuit::debug!(
-		"built notification heap: {} items for {} in {:.3}s (used {} bytes, scanned {} PDUs in \
-		 {} rooms)",
-		heap_count,
-		sender_user,
-		elapsed.as_secs_f64(),
-		heap_bytes,
-		total_scanned,
+		count = notifications.len(),
+		pdus_scanned = total_scanned,
 		rooms_scanned,
+		elapsed_secs = elapsed.as_secs_f64(),
+		%sender_user,
+		"built notifications response",
 	);
 
 	Ok(get_notifications::v3::Response { next_token, notifications })
