@@ -194,6 +194,15 @@ pub(crate) async fn sync_events_v5_route(
 
 	fetch_subscriptions(services, sync_info, &known_rooms, &mut todo_rooms).await;
 
+	// Normalize sentinel values: rooms still at u64::MAX were not found in
+	// any list's known_rooms, meaning they are new to this connection and
+	// need initial sync (roomsince = 0).
+	for todo_room in todo_rooms.values_mut() {
+		if todo_room.2 == u64::MAX {
+			todo_room.2 = 0;
+		}
+	}
+
 	response.rooms = process_rooms(
 		services,
 		sender_user,
@@ -266,14 +275,14 @@ async fn fetch_subscriptions(
 				.map(|(ty, sk)| (ty.clone(), sk.as_str().into())),
 		);
 		todo_room.1 = todo_room.1.max(usize_from_ruma(limit));
-		// 0 means unknown because it got out of date
-		todo_room.2 = todo_room.2.min(
-			known_rooms
-				.get("subscriptions")
-				.and_then(|k| k.get(room_id))
-				.copied()
-				.unwrap_or(0),
-		);
+		// Only clamp roomsince when the room is actually tracked in subscriptions;
+		// defaulting to 0 would force initial=true for rooms in overlapping lists.
+		if let Some(&since) = known_rooms
+			.get("subscriptions")
+			.and_then(|k| k.get(room_id))
+		{
+			todo_room.2 = todo_room.2.min(since);
+		}
 		known_subscription_rooms.insert(room_id.clone());
 	}
 	// where this went (protomsc says it was removed)
@@ -369,14 +378,14 @@ where
 				);
 
 				todo_room.1 = todo_room.1.max(limit);
-				// 0 means unknown because it got out of date
-				todo_room.2 = todo_room.2.min(
-					known_rooms
-						.get(list_id.as_str())
-						.and_then(|k| k.get(room_id))
-						.copied()
-						.unwrap_or(0),
-				);
+				// Only clamp roomsince when the room is actually tracked in this list;
+				// defaulting to 0 would force initial=true for rooms in overlapping lists.
+				if let Some(&since) = known_rooms
+					.get(list_id.as_str())
+					.and_then(|k| k.get(room_id))
+				{
+					todo_room.2 = todo_room.2.min(since);
+				}
 			}
 		}
 		response
