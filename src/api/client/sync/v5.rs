@@ -291,15 +291,13 @@ async fn fetch_subscriptions(
 	//	body.room_subscriptions.remove(&r);
 	//}
 
-	if let Some(conn_id) = body.conn_id.clone() {
-		let snake_key = into_snake_key(sender_user, sender_device, conn_id);
-		services.sync.update_snake_sync_known_rooms(
-			&snake_key,
-			"subscriptions".to_owned(),
-			known_subscription_rooms,
-			globalsince,
-		);
-	}
+	let snake_key = into_snake_key(sender_user, sender_device, body.conn_id.clone());
+	services.sync.update_snake_sync_known_rooms(
+		&snake_key,
+		"subscriptions".to_owned(),
+		known_subscription_rooms,
+		globalsince,
+	);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -394,15 +392,13 @@ where
 				count: ruma_from_usize(active_rooms.len()),
 			});
 
-		if let Some(conn_id) = body.conn_id.clone() {
-			let snake_key = into_snake_key(sender_user, sender_device, conn_id);
-			services.sync.update_snake_sync_known_rooms(
-				&snake_key,
-				list_id.clone(),
-				new_known_rooms,
-				globalsince,
-			);
-		}
+		let snake_key = into_snake_key(sender_user, sender_device, body.conn_id.clone());
+		services.sync.update_snake_sync_known_rooms(
+			&snake_key,
+			list_id.clone(),
+			new_known_rooms,
+			globalsince,
+		);
 	}
 
 	BTreeMap::default()
