@@ -382,7 +382,6 @@ impl Service {
 		new_cached_rooms: BTreeSet<OwnedRoomId>,
 		globalsince: u64,
 	) {
-		assert!(key.2.is_some(), "Some(conn_id) required for this call");
 		let mut cache = self.snake_connections.lock();
 		let cached = Arc::clone(
 			cache
