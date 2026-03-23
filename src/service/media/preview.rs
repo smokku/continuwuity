@@ -86,7 +86,7 @@ async fn request_url_preview(&self, url: &Url) -> Result<UrlPreviewData> {
 	}
 
 	let client = &self.services.client.url_preview;
-	let response = client.head(url.as_str()).send().await?;
+	let response = client.head(url.as_str()).send().await?.error_for_status()?;
 
 	debug!(%url, "URL preview response headers: {:?}", response.headers());
 
@@ -134,13 +134,20 @@ pub async fn download_image(
 
 	let mut preview_data = preview_data.unwrap_or_default();
 
-	let image = self
+	let response = self
 		.services
 		.client
 		.url_preview
 		.get(url)
 		.send()
 		.await?
+		.error_for_status()?;
+
+	let content_type = response
+		.headers()
+		.get(reqwest::header::CONTENT_TYPE)
+		.cloned();
+	let image = response
 		.limit_read(
 			self.services
 				.server
@@ -156,7 +163,9 @@ pub async fn download_image(
 		media_id: &random_string(super::MXC_LENGTH),
 	};
 
-	self.create(&mxc, None, None, None, &image).await?;
+	let content_type = content_type.and_then(|v| v.to_str().map(ToOwned::to_owned).ok());
+	self.create(&mxc, None, None, content_type.as_deref(), &image)
+		.await?;
 
 	preview_data.image = Some(mxc.to_string());
 	if preview_data.image_height.is_none() || preview_data.image_width.is_none() {
@@ -219,7 +228,14 @@ pub async fn download_media(&self, url: &str) -> Result<(OwnedMxcUri, usize)> {
 	use http::header::CONTENT_TYPE;
 	use ruma::Mxc;
 
-	let response = self.services.client.url_preview.get(url).send().await?;
+	let response = self
+		.services
+		.client
+		.url_preview
+		.get(url)
+		.send()
+		.await?
+		.error_for_status()?;
 	let content_type = response.headers().get(CONTENT_TYPE).cloned();
 	let media = response
 		.limit_read(
@@ -290,6 +306,7 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 		.get(url)
 		.send()
 		.await?
+		.error_for_status()?
 		.limit_read_text(
 			self.services
 				.server
