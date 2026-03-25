@@ -290,8 +290,21 @@ where
 			.await;
 	}
 
-	self.db
-		.increment_notification_counts(room_id, notifies.clone(), highlights.clone());
+	// Extract thread root event ID for per-thread notification tracking
+	let thread_id = pdu
+		.get_content::<ExtractRelatesTo>()
+		.ok()
+		.and_then(|c| match c.relates_to {
+			| Relation::Thread(thread) => Some(thread.event_id),
+			| _ => None,
+		});
+
+	self.db.increment_notification_counts(
+		room_id,
+		notifies.clone(),
+		highlights.clone(),
+		thread_id.as_deref(),
+	);
 
 	if !notifies.is_empty() || !highlights.is_empty() {
 		conduwuit::debug!(
