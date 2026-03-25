@@ -132,10 +132,21 @@ pub(crate) async fn create_receipt_route(
 		&body.receipt_type,
 		create_receipt::v3::ReceiptType::Read | create_receipt::v3::ReceiptType::ReadPrivate
 	) {
-		services
-			.rooms
-			.user
-			.reset_notification_counts(sender_user, &body.room_id);
+		match &body.thread {
+			| ReceiptThread::Thread(thread_id) => {
+				services.rooms.user.reset_thread_notification_counts(
+					sender_user,
+					&body.room_id,
+					thread_id,
+				);
+			},
+			| _ => {
+				services
+					.rooms
+					.user
+					.reset_notification_counts(sender_user, &body.room_id);
+			},
+		}
 	}
 
 	// ping presence
@@ -172,7 +183,7 @@ pub(crate) async fn create_receipt_route(
 						sender_user.to_owned(),
 						ruma::events::receipt::Receipt {
 							ts: Some(MilliSecondsSinceUnixEpoch::now()),
-							thread: ReceiptThread::Unthreaded,
+							thread: body.thread.clone(),
 						},
 					)]),
 				)]),

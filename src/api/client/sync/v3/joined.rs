@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use conduwuit::{
 	Result, at, debug_warn, err, extract_variant,
@@ -92,6 +92,22 @@ pub(super) async fn load_joined_room(
 		);
 	}
 
+	// Build per-thread unread notification counts
+	let thread_counts = services
+		.rooms
+		.user
+		.thread_notification_counts(sync_context.syncing_user, room_id)
+		.await;
+	let unread_thread_notifications = thread_counts
+		.into_iter()
+		.map(|(thread_id, (notif, highlight))| {
+			(thread_id, UnreadNotificationsCount {
+				notification_count: Some(notif.try_into().unwrap_or_else(|_| uint!(0))),
+				highlight_count: Some(highlight.try_into().unwrap_or_else(|_| uint!(0))),
+			})
+		})
+		.collect();
+
 	let joined_room = JoinedRoom {
 		account_data,
 		summary: summary.unwrap_or_default(),
@@ -101,7 +117,7 @@ pub(super) async fn load_joined_room(
 			events: state_events.into_iter().map(Event::into_format).collect(),
 		},
 		ephemeral,
-		unread_thread_notifications: BTreeMap::new(),
+		unread_thread_notifications,
 	};
 
 	Ok((joined_room, device_list_updates))

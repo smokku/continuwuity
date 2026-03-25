@@ -18,6 +18,8 @@ pub(super) struct Data {
 	pduid_pdu: Arc<Map>,
 	userroomid_highlightcount: Arc<Map>,
 	userroomid_notificationcount: Arc<Map>,
+	userroomidthreadid_notificationcount: Arc<Map>,
+	userroomidthreadid_highlightcount: Arc<Map>,
 	pub(super) db: Arc<Database>,
 	services: Services,
 }
@@ -37,6 +39,9 @@ impl Data {
 			pduid_pdu: db["pduid_pdu"].clone(),
 			userroomid_highlightcount: db["userroomid_highlightcount"].clone(),
 			userroomid_notificationcount: db["userroomid_notificationcount"].clone(),
+			userroomidthreadid_notificationcount: db["userroomidthreadid_notificationcount"]
+				.clone(),
+			userroomidthreadid_highlightcount: db["userroomidthreadid_highlightcount"].clone(),
 			db: args.db.clone(),
 			services: Services {
 				short: args.depend::<rooms::short::Service>("rooms::short"),
@@ -256,6 +261,7 @@ impl Data {
 		room_id: &RoomId,
 		notifies: Vec<OwnedUserId>,
 		highlights: Vec<OwnedUserId>,
+		thread_id: Option<&EventId>,
 	) {
 		let _cork = self.db.cork();
 
@@ -263,14 +269,34 @@ impl Data {
 			let mut userroom_id = user.as_bytes().to_vec();
 			userroom_id.push(0xFF);
 			userroom_id.extend_from_slice(room_id.as_bytes());
-			increment(&self.userroomid_notificationcount, &userroom_id);
+
+			if let Some(thread_id) = thread_id {
+				// Thread event: only increment per-thread counts
+				let mut userroomthread_id = userroom_id.clone();
+				userroomthread_id.push(0xFF);
+				userroomthread_id.extend_from_slice(thread_id.as_bytes());
+				increment(&self.userroomidthreadid_notificationcount, &userroomthread_id);
+			} else {
+				// Room event: only increment room-level counts
+				increment(&self.userroomid_notificationcount, &userroom_id);
+			}
 		}
 
 		for user in highlights {
 			let mut userroom_id = user.as_bytes().to_vec();
 			userroom_id.push(0xFF);
 			userroom_id.extend_from_slice(room_id.as_bytes());
-			increment(&self.userroomid_highlightcount, &userroom_id);
+
+			if let Some(thread_id) = thread_id {
+				// Thread event: only increment per-thread counts
+				let mut userroomthread_id = userroom_id.clone();
+				userroomthread_id.push(0xFF);
+				userroomthread_id.extend_from_slice(thread_id.as_bytes());
+				increment(&self.userroomidthreadid_highlightcount, &userroomthread_id);
+			} else {
+				// Room event: only increment room-level counts
+				increment(&self.userroomid_highlightcount, &userroom_id);
+			}
 		}
 	}
 
