@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use conduwuit::{
 	Result, at, debug_warn, err, extract_variant,
@@ -92,21 +92,28 @@ pub(super) async fn load_joined_room(
 		);
 	}
 
-	// Build per-thread unread notification counts
-	let thread_counts = services
-		.rooms
-		.user
-		.thread_notification_counts(sync_context.syncing_user, room_id)
-		.await;
-	let unread_thread_notifications = thread_counts
-		.into_iter()
-		.map(|(thread_id, (notif, highlight))| {
-			(thread_id, UnreadNotificationsCount {
-				notification_count: Some(notif.try_into().unwrap_or_else(|_| uint!(0))),
-				highlight_count: Some(highlight.try_into().unwrap_or_else(|_| uint!(0))),
+	// Build per-thread unread notification counts only when notification state
+	// may have changed.  Without this guard the server unconditionally returns
+	// every non-zero thread count on every sync response, which prevents clients
+	// from long-polling and causes a busy-loop.
+	let unread_thread_notifications = if notification_counts.is_some() {
+		let thread_counts = services
+			.rooms
+			.user
+			.thread_notification_counts(sync_context.syncing_user, room_id)
+			.await;
+		thread_counts
+			.into_iter()
+			.map(|(thread_id, (notif, highlight))| {
+				(thread_id, UnreadNotificationsCount {
+					notification_count: Some(notif.try_into().unwrap_or_else(|_| uint!(0))),
+					highlight_count: Some(highlight.try_into().unwrap_or_else(|_| uint!(0))),
+				})
 			})
-		})
-		.collect();
+			.collect()
+	} else {
+		BTreeMap::default()
+	};
 
 	let joined_room = JoinedRoom {
 		account_data,
